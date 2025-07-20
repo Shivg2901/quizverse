@@ -31,6 +31,9 @@ async function extractTextFromPDF(filePath) {
  */
 async function generateQuizFromPDF(pdfContent, topic, difficulty = 'medium', numQuestions = 5, questionType = 'mcq') {
   try {
+    console.log('[generateQuizFromPDF] Called with:', { topic, difficulty, numQuestions, questionType });
+    console.log('[generateQuizFromPDF] PDF content length:', pdfContent.length);
+
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
     const prompt = `
@@ -64,14 +67,18 @@ Format the response as a valid JSON object with this structure:
 
 Do not add anything else outside this JSON.`;
 
+    console.log('[generateQuizFromPDF] Sending prompt to Gemini...');
     const result = await model.generateContent(prompt);
     const response = await result.response;
     let textResponse = response.text();
+
+    console.log('[generateQuizFromPDF] Gemini response:', textResponse.substring(0, 500));
 
     const jsonStart = textResponse.indexOf('{');
     const jsonEnd = textResponse.lastIndexOf('}') + 1;
 
     if (jsonStart === -1 || jsonEnd === 0) {
+      console.error('[generateQuizFromPDF] Could not find valid JSON in AI response');
       throw new Error("Could not find valid JSON in the AI response.");
     }
 
@@ -79,6 +86,7 @@ Do not add anything else outside this JSON.`;
     const parsedResponse = JSON.parse(jsonString);
 
     if (!parsedResponse.quiz || !Array.isArray(parsedResponse.quiz.questions)) {
+      console.error('[generateQuizFromPDF] Generated content does not match expected structure');
       throw new Error("Generated content doesn't match expected structure.");
     }
 
@@ -86,10 +94,10 @@ Do not add anything else outside this JSON.`;
       ...q,
       type: questionType
     }));
-    console.log(parsedResponse.quiz);
+    console.log('[generateQuizFromPDF] Parsed quiz:', JSON.stringify(parsedResponse.quiz, null, 2));
     return parsedResponse.quiz;
   } catch (error) {
-    console.error('Error generating quiz from PDF:', error);
+    console.error('[generateQuizFromPDF] Error:', error);
     return generateFallbackPDFQuiz(pdfContent, topic, difficulty, numQuestions, questionType);
   }
 }

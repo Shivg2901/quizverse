@@ -416,36 +416,52 @@ exports.generatePDFQuiz = async (req, res) => {
   const userId = req.user.id;
   const { topic, difficulty = 'medium', numQuestions = 5, questionType = 'mcq' } = req.body;
   
+  console.log('[generatePDFQuiz] Request body:', req.body);
+  console.log('[generatePDFQuiz] Uploaded file:', req.file);
+
   if (!req.file) {
+    console.error('[generatePDFQuiz] No PDF file uploaded');
     return res.status(400).json({ message: 'PDF file is required' });
   }
   
   if (!topic) {
+    console.error('[generatePDFQuiz] No topic provided');
     return res.status(400).json({ message: 'Topic is required' });
   }
   
   try {
-    const filePath = req.file.path;
-    console.log(`Processing PDF at path: ${filePath}`);
-    
-    const pdfText = await extractTextFromPDF(filePath);
-    console.log(`Extracted ${pdfText.length} characters from PDF`);
-    
+    const fileUrl = req.file.location;
+    console.log(`[generatePDFQuiz] Processing PDF from S3 URL: ${fileUrl}`);
+
+    const axios = require('axios');
+    const response = await axios.get(fileUrl, { responseType: 'arraybuffer' });
+    const pdfBuffer = Buffer.from(response.data, 'binary');
+    const pdfParse = require('pdf-parse');
+    const pdfData = await pdfParse(pdfBuffer);
+    const pdfText = pdfData.text;
+
+    console.log(`[generatePDFQuiz] Extracted PDF text length: ${pdfText.length}`);
+    console.log(`[generatePDFQuiz] PDF text preview:`, pdfText.substring(0, 500));
+
     if (pdfText.length < 100) {
+      console.error('[generatePDFQuiz] PDF content too short or extraction failed');
       throw new Error('PDF content is too short or could not be properly extracted');
     }
     
-    console.log(`Generating quiz from PDF content on topic: ${topic}`);
+    console.log(`[generatePDFQuiz] Generating quiz from PDF content on topic: ${topic}`);
     const quizData = await generateQuizFromPDF(pdfText, topic, difficulty, numQuestions, questionType);
+
+    console.log('[generatePDFQuiz] Quiz data generated:', JSON.stringify(quizData, null, 2));
     
     const quizResult = await db.query(
       'INSERT INTO quizzes (user_id, topic, difficulty, description, source_type, source_file_path) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
-      [userId, topic, difficulty, quizData.description || `Quiz about ${topic}`, 'pdf', req.file.filename]
+      [userId, topic, difficulty, quizData.description || `Quiz about ${topic}`, 'pdf', fileUrl]
     );
     
     const quizId = quizResult.rows[0].id;
     
     for (const item of quizData.questions) {
+      console.log(`[generatePDFQuiz] Inserting question:`, item);
       const questionResult = await db.query(
         'INSERT INTO questions (quiz_id, question_text, correct_answer, explanation, type) VALUES ($1, $2, $3, $4, $5) RETURNING id',
         [
@@ -461,6 +477,7 @@ exports.generatePDFQuiz = async (req, res) => {
     
       if (questionType === 'mcq') {
         for (const option of item.options) {
+          console.log(`[generatePDFQuiz] Inserting option:`, option, 'isCorrect:', option === item.correctAnswer);
           await db.query(
             'INSERT INTO options (question_id, option_text, is_correct) VALUES ($1, $2, $3)',
             [questionId, option, option === item.correctAnswer]
@@ -469,7 +486,7 @@ exports.generatePDFQuiz = async (req, res) => {
       }
     }
     
-    
+    console.log(`[generatePDFQuiz] Quiz inserted with ID: ${quizId}`);
     res.status(201).json({
       status: 'success',
       data: {
@@ -478,21 +495,12 @@ exports.generatePDFQuiz = async (req, res) => {
         difficulty,
         description: quizData.description || `Quiz about ${topic}`,
         numQuestions: quizData.questions.length,
-        source: 'pdf'
+        source: 'pdf',
+        fileUrl
       }
     });
   } catch (err) {
-    console.error('Error generating quiz from PDF:', err);
-    
-    if (req.file && req.file.path) {
-      try {
-        fs.unlinkSync(req.file.path);
-        console.log(`Removed uploaded file: ${req.file.path}`);
-      } catch (unlinkErr) {
-        console.error('Error removing uploaded file:', unlinkErr);
-      }
-    }
-    
+    console.error('[generatePDFQuiz] Error generating quiz from PDF:', err);
     res.status(500).json({ 
       message: 'Error generating quiz from PDF', 
       error: err.message,
